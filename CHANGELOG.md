@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## 0.1.24 (2026-10-15)
+
+### Fixes
+
+- Preserve Codex bearer tokens across provider switches and support both TOML and legacy auth.json configurations.
+
 ## 0.1.23 (2026-09-01)
 
 ### Features
