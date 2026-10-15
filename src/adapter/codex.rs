@@ -178,7 +178,7 @@ impl AgentAdapter for CodexAdapter {
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
-        let api_key = read_json_object(&self.auth_file(paths))
+        let legacy_api_key = read_json_object(&self.auth_file(paths))
             .ok()
             .and_then(|auth| {
                 auth.get("OPENAI_API_KEY")
@@ -215,21 +215,38 @@ impl AgentAdapter for CodexAdapter {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             let active = key == active_id;
+            let toml_api_key = table
+                .get("experimental_bearer_token")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let api_key = toml_api_key
+                .or_else(|| {
+                    if active {
+                        doc.get("experimental_bearer_token")
+                            .and_then(|v| v.as_str())
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string)
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| {
+                    if active || requires_login {
+                        Some(legacy_api_key.clone())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default();
             rows.push(RescuedRow {
                 provider: crate::store::Provider {
                     id: String::new(), // assigned by the store assembler
                     name: key.to_string(),
                     base_url,
-                    // auth.json holds one shared OPENAI_API_KEY. Rows with
-                    // requires_openai_auth read it at request time, and the
-                    // active row owns whatever key the app currently uses —
-                    // claim the shared key for both so switching between them
-                    // never trips the non-empty-key validation.
-                    api_key: if active || requires_login {
-                        api_key.clone()
-                    } else {
-                        String::new()
-                    },
+                    api_key,
                     model: if active { model.clone() } else { None },
                     catalog: if active {
                         catalog.clone().unwrap_or_default()
@@ -328,6 +345,7 @@ fn patch_codex_toml(doc: &mut DocumentMut, provider: &Provider) -> Result<()> {
     if provider.official {
         toml_remove(doc, &["model_provider"])?;
         toml_remove(doc, &["model"])?;
+        toml_remove(doc, &["experimental_bearer_token"])?;
         return Ok(());
     }
 
@@ -364,6 +382,11 @@ fn patch_codex_toml(doc: &mut DocumentMut, provider: &Provider) -> Result<()> {
         doc,
         &["model_providers", key.as_str(), "requires_openai_auth"],
         toml_edit::value(true),
+    )?;
+    toml_set(
+        doc,
+        &["model_providers", key.as_str(), "experimental_bearer_token"],
+        toml_edit::value(provider.api_key.as_str()),
     )?;
     Ok(())
 }
@@ -882,9 +905,8 @@ env_key = "CUSTOM"
     #[test]
     fn rescue_imports_custom_provider_tables() {
         // A hand-configured user's config.toml: one active custom provider
-        // plus a second inactive requires_openai_auth table. Both read the
-        // shared auth.json key at request time, so both claim it; only the
-        // active row carries model and catalog.
+        // plus a second inactive requires_openai_auth table. The legacy
+        // auth.json key is still accepted when no TOML token is present.
         let (_td, paths) = setup();
         init_codex(&paths);
         fs::write(
@@ -922,7 +944,7 @@ base_url = "https://openrouter.example.com/v1"
         let agate = rows.iter().find(|r| r.provider.name == "Agate").unwrap();
         assert!(agate.active);
         assert_eq!(agate.provider.base_url, "https://agate.example.com/v1");
-        // requires_openai_auth rows read the shared auth.json key.
+        // Legacy requires_openai_auth rows read the shared auth.json key.
         assert_eq!(agate.provider.api_key, "sk-live");
         assert_eq!(agate.provider.model.as_deref(), Some("mimo-v2.5"));
         assert_eq!(agate.provider.catalog.len(), 1);
@@ -934,8 +956,7 @@ base_url = "https://openrouter.example.com/v1"
             .find(|r| r.provider.name == "OpenRouter")
             .unwrap();
         assert!(!openrouter.active);
-        // No requires_openai_auth: its key lives in its own env_key variable,
-        // not in auth.json, so rescue has nothing to claim.
+        // No requires_openai_auth and no TOML token: rescue has no key to claim.
         assert_eq!(openrouter.provider.api_key, "");
         assert_eq!(openrouter.provider.model, None);
         assert_eq!(openrouter.provider.catalog.len(), 0);
@@ -985,6 +1006,69 @@ requires_openai_auth = true
             doc["model_provider"].as_str(),
             Some("OpenRouter") as Option<&str>
         );
+    }
+
+    #[test]
+    fn rescue_prefers_provider_toml_token_and_supports_top_level_token() {
+        let (_td, paths) = setup();
+        init_codex(&paths);
+        fs::write(
+            paths.codex_dir.join("config.toml"),
+            r#"
+model_provider = "OpenRouter"
+experimental_bearer_token = "sk-top-level"
+
+[model_providers.Agate]
+name = "Agate"
+base_url = "https://agate.example.com/v1"
+experimental_bearer_token = "sk-agate"
+
+[model_providers.OpenRouter]
+name = "OpenRouter"
+base_url = "https://openrouter.example.com/v1"
+requires_openai_auth = true
+"#,
+        )
+        .unwrap();
+        fs::write(
+            paths.codex_dir.join("auth.json"),
+            br#"{"OPENAI_API_KEY":"sk-legacy"}"#,
+        )
+        .unwrap();
+
+        let rows = CodexAdapter.rescue(&paths);
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.provider.name == "Agate")
+                .unwrap()
+                .provider
+                .api_key,
+            "sk-agate"
+        );
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.provider.name == "OpenRouter")
+                .unwrap()
+                .provider
+                .api_key,
+            "sk-top-level"
+        );
+    }
+
+    #[test]
+    fn apply_writes_new_and_legacy_codex_tokens() {
+        let (_td, paths) = setup();
+        init_codex(&paths);
+
+        CodexAdapter.apply(&paths, &provider(None)).unwrap();
+
+        let doc = read_toml_file(&paths.codex_dir.join("config.toml"));
+        assert_eq!(
+            doc["model_providers"]["PackyCode"]["experimental_bearer_token"].as_str(),
+            Some("sk-test-key-abcd")
+        );
+        let auth = read_json(&paths.codex_dir.join("auth.json"));
+        assert_eq!(auth["OPENAI_API_KEY"], "sk-test-key-abcd");
     }
 
     #[test]

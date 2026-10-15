@@ -487,17 +487,23 @@ fn extract_claude(cfg: &Value, meta: &Value) -> Option<Mapped> {
 
 fn extract_codex(cfg: &Value) -> Option<Mapped> {
     let auth = cfg.get("auth").unwrap_or(&Value::Null);
-    let mut api_key = nonempty(auth.get("OPENAI_API_KEY"));
-    let (base_url, model) = match cfg.get("config") {
+    let (config_api_key, base_url, model) = match cfg.get("config") {
         Some(Value::String(raw)) => {
             let doc: DocumentMut = raw.parse().ok()?;
             let preferred = toml_str(&doc, &["model_provider"]).unwrap_or_else(|| "custom".into());
             let slot = ["model_providers", preferred.as_str(), "base_url"];
+            let token_slot = [
+                "model_providers",
+                preferred.as_str(),
+                "experimental_bearer_token",
+            ];
             let base = toml_str(&doc, &slot)
                 .or_else(|| first_codex_base_url(&doc))
                 .or_else(|| toml_str(&doc, &["base_url"]));
             let model = toml_str(&doc, &["model"]);
-            (base, model)
+            let api_key = toml_str(&doc, &token_slot)
+                .or_else(|| toml_str(&doc, &["experimental_bearer_token"]));
+            (api_key, base, model)
         }
         Some(obj) if obj.is_object() => {
             let preferred = nonempty(obj.get("model_provider")).unwrap_or_else(|| "custom".into());
@@ -505,10 +511,15 @@ fn extract_codex(cfg: &Value) -> Option<Mapped> {
                 .or_else(|| first_json_codex_base(obj))
                 .or_else(|| nonempty(obj.get("base_url")));
             let model = nonempty(obj.get("model"));
-            (base, model)
+            let api_key = nonempty(obj.pointer(&format!(
+                "/model_providers/{preferred}/experimental_bearer_token"
+            )))
+            .or_else(|| nonempty(obj.get("experimental_bearer_token")));
+            (api_key, base, model)
         }
-        _ => (None, None),
+        _ => (None, None, None),
     };
+    let mut api_key = config_api_key.or_else(|| nonempty(auth.get("OPENAI_API_KEY")));
     if api_key.is_none() {
         api_key = nonempty(cfg.pointer("/env/OPENAI_API_KEY"))
             .or_else(|| nonempty(cfg.get("apiKey")))
