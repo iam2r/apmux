@@ -47,11 +47,21 @@ jobs:
             exit 1
           fi
 
+          # Rule 3: the bot Release PR is always `release` → `main`. A retarget
+          # to develop would merge the version bump without tagging.
+          if [ "$HEAD_REF" = "release" ] && [ "$BASE" != "main" ]; then
+            echo "::error::The Release PR must target 'main' (currently '$BASE')."
+            echo "::error::Release PR 必须指向 main,不要改到 develop,否则不会打 tag / 发资产。"
+            exit 1
+          fi
+
           echo "PR policy OK (base=$BASE head=$HEAD_REF assoc=$ASSOC)"
 
   unix:
     name: fmt+clippy+test (linux)
-    if: github.base_ref == 'develop'
+    if: |
+      github.event_name == 'pull_request' &&
+      (github.base_ref == 'develop' || github.base_ref == 'main')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -67,7 +77,9 @@ jobs:
 
   windows:
     name: test (windows)
-    if: github.base_ref == 'develop'
+    if: |
+      github.event_name == 'pull_request' &&
+      (github.base_ref == 'develop' || github.base_ref == 'main')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5

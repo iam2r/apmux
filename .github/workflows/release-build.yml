@@ -1,21 +1,20 @@
 name: Release build
 
-# Binary build + GitHub Release assets. Triggered by the `publish-release`
-# job in release.yml pushing `apmux/vX.Y.Z` (the `push: tags: 'apmux/v*'`
-# listener fires here). It can also be re-run manually via workflow_dispatch
-# to rebuild assets for an existing tag (e.g. when the workflow file itself
-# changes and you want fresh binaries without bumping the version).
+# Binary build + GitHub Release assets. `publish-release` in release.yml
+# dispatches this after creating a new `apmux/vX.Y.Z` tag (GITHUB_TOKEN tag
+# pushes do not start workflows). `push: tags` is a fallback for PAT/manual
+# tag pushes. Re-run via workflow_dispatch to rebuild an existing tag.
 on:
   workflow_call:
     inputs:
       tag:
-        description: Git tag to ship (e.g. v0.1.1)
+        description: Git tag to ship (e.g. apmux/v0.1.23)
         required: true
         type: string
   workflow_dispatch:
     inputs:
       tag:
-        description: Git tag to ship (e.g. v0.1.1)
+        description: Git tag to ship (e.g. apmux/v0.1.23)
         required: true
         type: string
   push:
@@ -38,6 +37,16 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
+      - name: Check tag shape
+        run: |
+          set -euo pipefail
+          case "${RELEASE_TAG}" in
+            apmux/v*) ;;
+            *)
+              echo "::error::tag must look like apmux/vX.Y.Z (got '${RELEASE_TAG}')."
+              exit 1
+              ;;
+          esac
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.RELEASE_TAG }}
@@ -171,6 +180,7 @@ jobs:
           path: artifacts
           pattern: apmux-*
       - name: Pack gzip/zip assets
+        id: pack
         run: |
           set -euxo pipefail
           sudo apt-get update
@@ -179,6 +189,7 @@ jobs:
           # Tag is `apmux/vX.Y.Z`; keep only the semver part for asset names.
           VERSION="${RELEASE_TAG##*/}"
           VERSION="${VERSION#v}"
+          echo "release_name=apmux v${VERSION}" >> "$GITHUB_OUTPUT"
 
           pack_tar() {
             local name="$1"
@@ -210,7 +221,7 @@ jobs:
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          name: apmux ${{ env.RELEASE_TAG }}
+          name: ${{ steps.pack.outputs.release_name }}
           draft: false
           prerelease: false
           generate_release_notes: true

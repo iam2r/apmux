@@ -49,6 +49,7 @@ A policy gate runs on every PR and fails with a clear message when:
 
 - the PR targets `main` instead of `develop` (only the bot's Release PR may
   target `main`);
+- the bot Release PR (`head=release`) targets something other than `main`;
 - the PR adds `.changeset/` files (external contributors — that's the
   maintainer's job at release time).
 
@@ -71,10 +72,10 @@ change files and push again.
    breaking (discuss first). See [knope.toml](knope.toml).
 3. Push to `develop`. The release bot takes over:
    consumes the change files → bumps `Cargo.toml` / `Cargo.lock` and updates
-   `CHANGELOG.md` on a `release` branch → opens a Release PR (develop → main)
-   for you to merge → the push to `main` tags `apmux/vX.Y.Z` → builds
-   binaries for all platforms → back-merges `main` into `develop` so the
-   bump syncs back.
+   `CHANGELOG.md` on a `release` branch → opens a Release PR (`release` →
+   `main`). Merge it with a **merge commit** (not squash/rebase). The push
+   to `main` tags `apmux/vX.Y.Z` (skipped if the tag already exists),
+   builds binaries, and back-merges `main` into `develop`.
 
 Hotfixes also go through `develop` (push the fix + change file there — it's
 the fastest path to a release). `main` never takes feature work.

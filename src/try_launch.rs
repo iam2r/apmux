@@ -76,7 +76,8 @@ fn codex_config(provider: &Provider) -> Result<String> {
     tbl["name"] = toml_edit::value(provider.name.as_str());
     tbl["base_url"] = toml_edit::value(provider.base_url.as_str());
     tbl["wire_api"] = toml_edit::value("responses");
-    // auth.json carries OPENAI_API_KEY; this makes Codex read it.
+    tbl["experimental_bearer_token"] = toml_edit::value(provider.api_key.as_str());
+    // Keep the legacy auth.json payload too for older Codex versions.
     tbl["requires_openai_auth"] = toml_edit::value(true);
     Ok(doc.to_string())
 }

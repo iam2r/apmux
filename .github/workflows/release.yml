@@ -8,11 +8,13 @@ name: Release
 #       `release` branch (Cargo.toml/Cargo.lock bump, CHANGELOG.md entry,
 #       change files deleted) and force-pushes it, then opens/updates the
 #       Release PR (release → main) for the maintainer to merge
-#   maintainer manually merges the Release PR
-#     → `publish-release` job: the push to `main` tags the merge commit and
-#       back-merges main into develop; pushing the tag fires
-#       `release-build.yml` (which listens on `push: tags: 'apmux/v*'`) to
-#       build installers and publish the GitHub Release
+#   maintainer merges the Release PR with a merge commit (not squash/rebase)
+#     → `publish-release` job: if `apmux/vX.Y.Z` does not yet exist, tag the
+#       merge commit and dispatch `release-build.yml` (GITHUB_TOKEN tag
+#       pushes do not start workflows). A push that does not introduce a
+#       new version only back-merges main → develop — no rebuild.
+#     → `release-build.yml` tests, builds installers, publishes the GitHub
+#       Release. Rebuild an existing tag via workflow_dispatch.
 #
 # `main` is release-only: never push features there. Hotfixes also go through
 # `develop` (push it with a change file for the fastest path to a release).
@@ -81,16 +83,18 @@ jobs:
           TAG="apmux/v${VERSION}"
           echo "version=${VERSION} tag=${TAG}"
           {
-            echo "This PR was created by the release pipeline. After you merge it,"
-            echo "the push to \`main\` tags \`${TAG}\`, back-merges into develop,"
-            echo "and \`release-build.yml\` builds installers via the tag push."
+            echo "This PR was created by the release pipeline."
+            echo
+            echo "**Merge with a merge commit** (not squash / rebase), leave the"
+            echo "base as \`main\`, then merge. The push to \`main\` tags \`${TAG}\`,"
+            echo "dispatches \`release-build.yml\`, and back-merges into develop."
             echo
             echo "## ${VERSION}"
             echo
             git show origin/release:CHANGELOG.md | awk '/^## / { n++ } n == 1' || true
           } > body.md
           if gh pr list --head release --state open --json number --jq 'length' | grep -q '^1$'; then
-            gh pr edit release --title "Release v${VERSION}" --body-file body.md
+            gh pr edit release --base main --title "Release v${VERSION}" --body-file body.md
           else
             gh pr create --head release --base main \
               --title "Release v${VERSION}" --body-file body.md
@@ -119,10 +123,16 @@ jobs:
           TAG="apmux/v${VERSION}"
           SHA="$(git rev-parse HEAD)"
           echo "version=${VERSION} tag=${TAG} sha=${SHA}"
+          parents="$(git cat-file -p HEAD | grep -c '^parent ' || true)"
+          if [ "${parents}" -lt 2 ]; then
+            echo "::warning::HEAD is not a merge commit. Merge the Release PR with a merge commit (not squash/rebase) so back-merge into develop stays clean."
+          fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1 \
             || gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
-            echo "Tag ${TAG} already exists — skipping push (build will still be dispatched)."
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            echo "Tag ${TAG} already exists — skip tag push and asset rebuild."
+            echo "Rebuild an existing tag via workflow_dispatch on release-build.yml."
             exit 0
           fi
           git config user.name "github-actions[bot]"
@@ -133,11 +143,12 @@ jobs:
               -f ref="refs/tags/${TAG}" \
               -f sha="${SHA}"
           fi
+          echo "created=true" >> "$GITHUB_OUTPUT"
           echo "created ${TAG} at ${SHA}"
       # GITHUB_TOKEN tag pushes do not start a fresh workflow run, so explicitly
       # dispatch release-build.yml instead of relying on the `push: tags` filter.
       - name: Dispatch build workflow
-        if: steps.ensure-tag.outputs.tag != ''
+        if: steps.ensure-tag.outputs.created == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
