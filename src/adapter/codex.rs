@@ -333,6 +333,18 @@ impl AgentAdapter for CodexAdapter {
         }
         Ok(ApplyOutcome::Applied { files })
     }
+
+    /// Codex's TUI talks to a long-lived `app-server` daemon that loads
+    /// `config.toml` and the model catalog once, at daemon start. A session
+    /// opened after a switch re-attaches to that same daemon, so `/model`
+    /// keeps offering the rows from daemon start until it restarts — this is
+    /// what makes the new catalog visible to already-open sessions.
+    fn reload_service(&self, paths: &Paths) -> crate::reload::ReloadOutcome {
+        match which::which(AppId::Codex.to_string()) {
+            Ok(bin) => crate::reload::codex(paths, &bin),
+            Err(_) => crate::reload::ReloadOutcome::NotApplicable,
+        }
+    }
 }
 
 fn patch_codex_toml(doc: &mut DocumentMut, provider: &Provider) -> Result<()> {

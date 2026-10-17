@@ -2,7 +2,7 @@
 
 Guidance for Codex, Claude, Grok, and other coding agents working in this repo.
 
-apmux switches providers for Claude Code, Codex, OpenCode, and Pi Coding Agent: one JSON store, per-app live config writes, rotating local backups, WebDAV cloud sync, a TUI, and `apmux import` for migrating from cc-switch. No GUI, no daemon.
+apmux switches providers for Claude Code, Codex, OpenCode, and Pi Coding Agent: one JSON store, per-app live config writes, rotating local backups, WebDAV cloud sync, a TUI, and `apmux import` for migrating from cc-switch. No GUI, no daemon management — a switch only restarts a Codex `app-server` that is already running.
 
 ## Commands
 
@@ -43,6 +43,7 @@ herdr tab close <tab_id>
 - `paths.rs` — all directory resolution (`APMUX_CONFIG_DIR` override).
 - `adapter/` — registry of four adapters (Claude, Codex, OpenCode, Pi). Each declares its form fields, quick toggles, model UI (catalog vs slots), snippet syntax, apply/remove logic, slot clearing, and live-config rescue.
 - `switch.rs` — the only path that writes live configs (`use_provider`); TUI Enter calls the same function as the CLI.
+- `reload.rs` — the only place apmux touches a long-lived CLI process: after a successful live write it restarts a **running** Codex `app-server` daemon (pid file, then a `daemon version` probe) so already-open sessions see the new rows. It never starts one.
 - `settings.rs` — apps mode (auto/manual) + language. Auto detection = CLI binary on `PATH`, nothing else.
 - `backup.rs`, `cloud.rs`, `webdav.rs`, `gist.rs` — snapshot rotation and cloud sync: WebDAV under the built-in namespace `apmux-sync`, GitHub Gist as one secret gist per user. Both backends store the same `manifest.json` + `store.json` pair; `cloud::Remote` (trait) carries the shared conflict/manifest/backup protocol, `gist.rs` is CLI-only for now.
 - `tui/` — ratatui app. Copy goes through `i18n.rs` (English default, zh optional); never hardcode Chinese in widgets; never `eprintln` inside the TUI.
@@ -59,10 +60,11 @@ herdr tab close <tab_id>
 - **Codex catalog rows** are cloned from the embedded native template (`codex_native_responses.json`) with stored fields overlaid. Never strip `base_instructions` — Codex refuses catalog files without it. Empty catalogs omit the file and the `model_catalog_json` key.
 - **Snippets**: stored as JSON always; the editor surface syntax is per adapter (JSON everywhere except Codex, which edits TOML sections via toml_edit).
 - **Secrets**: masked in output unless `APMUX_SHOW_SECRETS=1`. New live files get mode 0600; existing modes are kept.
+- **Post-apply reload**: every live write ends with a best-effort `reload_service` call. Codex-only for now: no daemon pid file or no answer means nothing to do, and the status line falls back to "restart to apply".
 - **Rename**: everything machine-read lives in `src/name.rs`; a rename touches it plus `Cargo.toml`, install scripts, and prose docs.
 
 ## Scope
 
-In: provider switching for the four CLIs, local backups, WebDAV sync, cc-switch import, self-update, TUI.
+In: provider switching for the four CLIs, local backups, WebDAV sync, cc-switch import, self-update, TUI, restarting an already-running Codex `app-server` after a switch.
 
-Out: proxies, MCP/skills/prompt management, sessions, OAuth managers, daemons, other agent CLIs.
+Out: proxies, MCP/skills/prompt management, sessions, OAuth managers, daemon lifecycle management (apmux never starts a daemon), other agent CLIs.

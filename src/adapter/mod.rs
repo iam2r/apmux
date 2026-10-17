@@ -51,6 +51,22 @@ pub enum ApplyOutcome {
     SkippedUninitialized,
 }
 
+/// Result of applying a provider live: what happened to the config files,
+/// plus whether a running process had to be refreshed for the write to take
+/// effect ([`crate::reload`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplyReport {
+    pub outcome: ApplyOutcome,
+    pub reload: crate::reload::ReloadOutcome,
+}
+
+impl ApplyReport {
+    /// True when the live config was written (nothing to do otherwise).
+    pub fn applied(&self) -> bool {
+        matches!(self.outcome, ApplyOutcome::Applied { .. })
+    }
+}
+
 /// A provider discovered in a live agent config by [`AgentAdapter::rescue`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RescuedRow {
@@ -172,6 +188,16 @@ pub trait AgentAdapter: Send + Sync {
     fn live_paths(&self, paths: &Paths) -> Vec<PathBuf>;
     fn validate(&self, provider: &Provider) -> Result<()>;
     fn apply(&self, paths: &Paths, provider: &Provider) -> Result<ApplyOutcome>;
+    /// Refresh a running instance of this app so it picks up what [`apply`]
+    /// just wrote. Default: the app reads its config at launch, so there is
+    /// nothing to refresh. Codex overrides this for its app-server daemon,
+    /// which loads config once per daemon and is shared by every session.
+    ///
+    /// [`apply`]: AgentAdapter::apply
+    fn reload_service(&self, paths: &Paths) -> crate::reload::ReloadOutcome {
+        let _ = paths;
+        crate::reload::ReloadOutcome::NotApplicable
+    }
     /// Remove the provider slot previously injected under `key` from the live
     /// config (called on switch after a successful re-apply under a new key).
     /// Default: no-op (apps without an injected slot).

@@ -111,15 +111,26 @@ pub struct EditOpts {
 }
 
 pub fn edit_provider(paths: &Paths, store: &mut Store, opts: EditOpts) -> Result<String> {
-    edit_provider_inner(paths, store, opts, true)
+    Ok(edit_provider_inner(paths, store, opts, true)?.name)
 }
 
-/// Same as [`edit_provider`] but does not `eprintln` skip warnings (TUI).
+/// What an edit left behind: the row to show, plus the live apply when the
+/// edited row was the current one. The id is carried separately from the name
+/// because a rename changes the latter but not the former — the TUI needs the
+/// id to put the cursor back on the row it just edited.
+pub(crate) struct EditResult {
+    pub id: String,
+    pub name: String,
+    pub report: Option<adapter::ApplyReport>,
+}
+
+/// Same as [`edit_provider`] but does not `eprintln` skip warnings and reports
+/// the edited row's id as well as its display name (TUI).
 pub(crate) fn edit_provider_quiet(
     paths: &Paths,
     store: &mut Store,
     opts: EditOpts,
-) -> Result<String> {
+) -> Result<EditResult> {
     edit_provider_inner(paths, store, opts, false)
 }
 
@@ -128,7 +139,7 @@ fn edit_provider_inner(
     store: &mut Store,
     opts: EditOpts,
     stderr_warn: bool,
-) -> Result<String> {
+) -> Result<EditResult> {
     let existing = resolve(store, &opts.query, opts.app)?;
     if existing.official {
         anyhow::bail!(
@@ -193,22 +204,28 @@ fn edit_provider_inner(
 
     let is_current = store.current.get(&provider.app) == Some(&provider.id);
     let mut after_live = false;
+    let mut report = None;
     if is_current {
-        let outcome = apply_then_remember(paths, adapter, &provider, stderr_warn)?;
-        after_live = matches!(outcome, ApplyOutcome::Applied { .. });
+        let applied = apply_then_remember(paths, adapter, &provider, stderr_warn)?;
+        after_live = applied.applied();
         // A rename moves the live slot table under the new display name;
         // drop the stale one so the config never keeps both.
         if after_live {
             let new_key = (!provider.official).then(|| provider.slot_key());
             retire_previous_slot(paths, store, &provider, new_key)?;
         }
+        report = Some(applied);
     }
 
     let id = provider.id.clone();
     let display = provider.name.clone();
     store.providers.insert(id.clone(), provider);
     persist(store, paths, after_live, &format!("re-run apmux edit {id}"))?;
-    Ok(display)
+    Ok(EditResult {
+        id,
+        name: display,
+        report,
+    })
 }
 
 pub fn delete_provider(
@@ -238,13 +255,14 @@ pub fn delete_provider(
     Ok(name)
 }
 
+/// Switch an app to `query` and report what the live write + reload did.
 pub fn use_provider(
     paths: &Paths,
     store: &mut Store,
     query: &str,
     app: Option<AppId>,
-) -> Result<String> {
-    Ok(use_provider_inner(paths, store, query, app, true)?.0)
+) -> Result<(String, adapter::ApplyReport)> {
+    use_provider_inner(paths, store, query, app, true)
 }
 
 /// Same as [`use_provider`] but does not `eprintln` skip warnings (TUI toast instead).
@@ -253,7 +271,7 @@ pub(crate) fn use_provider_quiet(
     store: &mut Store,
     query: &str,
     app: Option<AppId>,
-) -> Result<(String, ApplyOutcome)> {
+) -> Result<(String, adapter::ApplyReport)> {
     use_provider_inner(paths, store, query, app, false)
 }
 
@@ -263,12 +281,12 @@ fn use_provider_inner(
     query: &str,
     app: Option<AppId>,
     stderr_warn: bool,
-) -> Result<(String, ApplyOutcome)> {
+) -> Result<(String, adapter::ApplyReport)> {
     let existing = resolve(store, query, app)?;
     let mut provider = existing.clone();
-    let outcome = apply_provider_inner(paths, &provider, stderr_warn)?;
+    let report = apply_provider_inner(paths, &provider, stderr_warn)?;
     normalize_provider(&mut provider);
-    let after_live = matches!(outcome, ApplyOutcome::Applied { .. });
+    let after_live = report.applied();
     // Live write succeeded: retire the previous slot (the old display-name
     // table in the app's config). Switching to an official row retires it
     // without writing a replacement.
@@ -286,14 +304,14 @@ fn use_provider_inner(
         after_live,
         &format!("re-run apmux use {}", provider.name),
     )?;
-    Ok((provider.name, outcome))
+    Ok((provider.name, report))
 }
 
 fn apply_provider_inner(
     paths: &Paths,
     provider: &Provider,
     stderr_warn: bool,
-) -> Result<ApplyOutcome> {
+) -> Result<adapter::ApplyReport> {
     let adapter = adapter::get(provider.app)?;
     let mut provider = provider.clone();
     normalize_provider(&mut provider);
@@ -326,8 +344,8 @@ fn reapply_current_inner(paths: &Paths, store: &Store, stderr_warn: bool) -> Res
             continue;
         };
         match apply_provider_inner(paths, provider, stderr_warn) {
-            Ok(ApplyOutcome::SkippedUninitialized) => skipped.push(*app),
-            Ok(ApplyOutcome::Applied { .. }) => {}
+            Ok(report) if report.applied() => {}
+            Ok(_) => skipped.push(*app),
             Err(e) => {
                 if stderr_warn {
                     eprintln!("warning: failed to re-apply {app} ({id}): {e:#}");
@@ -381,9 +399,9 @@ fn apply_then_remember(
     adapter: &dyn adapter::AgentAdapter,
     provider: &Provider,
     stderr_warn: bool,
-) -> Result<ApplyOutcome> {
+) -> Result<adapter::ApplyReport> {
     let outcome = adapter.apply(paths, provider)?;
-    match &outcome {
+    let reload = match &outcome {
         ApplyOutcome::SkippedUninitialized => {
             log::warn!(
                 "switch.skip_uninitialized app={} id={}",
@@ -397,6 +415,7 @@ fn apply_then_remember(
                     adapter.resolved_dir(paths).display()
                 );
             }
+            crate::reload::ReloadOutcome::NotApplicable
         }
         ApplyOutcome::Applied { files } => {
             let list = files
@@ -405,9 +424,26 @@ fn apply_then_remember(
                 .collect::<Vec<_>>()
                 .join(", ");
             log::info!("switch.applied files={list}");
+            // Only a live write can leave a running process stale: an app
+            // without a long-lived one reports NotApplicable.
+            let reload = adapter.reload_service(paths);
+            match &reload {
+                crate::reload::ReloadOutcome::Restarted { pid } => log::info!(
+                    "switch.reload_restarted app={} id={} pid={pid:?}",
+                    provider.app,
+                    provider.id
+                ),
+                crate::reload::ReloadOutcome::Failed(err) => log::warn!(
+                    "switch.reload_failed app={} id={} err={err}",
+                    provider.app,
+                    provider.id
+                ),
+                _ => {}
+            }
+            reload
         }
-    }
-    Ok(outcome)
+    };
+    Ok(adapter::ApplyReport { outcome, reload })
 }
 
 fn persist(store: &Store, paths: &Paths, after_live: bool, recovery: &str) -> Result<()> {
@@ -636,7 +672,7 @@ mod tests {
         assert_eq!(store.providers["claude-official"].name, "Claude Official");
 
         // Switching to it works (uninitialized dir skips live write).
-        let display = use_provider(&paths, &mut store, "claude-official", None).unwrap();
+        let (display, _report) = use_provider(&paths, &mut store, "claude-official", None).unwrap();
         assert_eq!(display, "Claude Official");
     }
 

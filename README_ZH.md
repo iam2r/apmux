@@ -4,7 +4,7 @@
 
 轻量本地工具：在 **Claude Code / Codex / OpenCode / Pi Coding Agent** 之间切换供应商，并做本地轮转备份与 WebDAV 或 GitHub Gist 云备份。无 GUI。无参数启动 TUI，子命令给脚本。
 
-不做 Proxy、MCP 管理、Skills、会话/用量、OAuth 账号、daemon、Gemini CLI。
+不做 Proxy、MCP 管理、Skills、会话/用量、OAuth 账号、daemon 的生命周期管理（apmux 不会启动 daemon，只在切换后重启已在运行的 Codex app-server）、Gemini CLI。
 
 ## 安装
 
@@ -126,7 +126,7 @@ TUI 默认英文。`--lang zh`、`APMUX_LANG=zh` 或系统 `LANG`/`LC_ALL` 为 `
 
 表单：`Tab` / ↑ ↓ 换字段，空格切换选项，**在 Model 字段上会拉取模型列表**，在 **模型目录 / 模型档位 / 公共配置** 上 Enter 或空格打开编辑器，其它字段 Enter 提交，Esc 取消。密钥字段掩码；编辑时留空 = 保留原值。可选模型留空会清掉模型；必填模型不能为空。
 
-目录类应用（OpenCode、Pi、Codex）：在 Model 上空格拉取，空格勾选，Enter 进入目录编辑（`id` / `label` / `context_window` / `max_tokens`；Codex 没有 max_tokens 列）。Claude：表单的「模型档位」打开档位表；空格给当前档位选一个 id；`a` 把该 id 复制到其它档位（含默认）。
+目录类应用（OpenCode、Pi、Codex）：在 Model 上空格拉取，空格勾选，Enter 进入目录编辑（`id` / `label` / `context_window` / `max_tokens`；Codex 没有 max_tokens 列）。用 `/` 过滤时可以不用先按 Enter，直接空格勾选高亮行。Claude：表单的「模型档位」打开档位表；空格给当前档位选一个 id；`a` 把该 id 复制到其它档位（含默认）。
 
 **公共配置**在添加/编辑表单里，是该供应商自己的 JSON。上面是内置勾选项（Claude 隐藏署名 / Teammates / Tool Search / 思考强度 / 禁用自动升级；Codex Goal mode），勾选会写进 JSON。表单里的「应用公共配置」，或 `apmux add/edit --apply-snippet`。片段先合并，自有字段后写，后者赢。`apmux snippet <name>` 查看/设置/清除该供应商的 JSON。
 
@@ -137,6 +137,12 @@ TUI 默认英文。`--lang zh`、`APMUX_LANG=zh` 或系统 `LANG`/`LC_ALL` 为 `
 同步页：`e` 设置，`p` 推送，`u` 拉取。进行中显示静态「同步中…」（无动画）；此时除 `q` 外忽略键盘。
 
 设置页（`g`）：Space/Enter 改当前行。应用检测默认**自动**：只有 PATH 上找得到 CLI 才算——残留的配置目录不算数。可改成**手动**逐个显示/隐藏。语言存在 `$APMUX_CONFIG_DIR/settings.json`。
+
+## Codex app-server
+
+Codex 的 TUI 连着一个常驻本地的 `app-server` 守护进程，它在**启动时**读一次 `config.toml` 和模型目录。Ctrl+C 只是结束会话，进程不会停：新会话会重新连上同一个守护进程，所以 `/model` 一直列的是那个守护进程启动时的目录。
+
+切换供应商（或编辑当前供应商）后，apmux 会**在守护进程本来就在运行时**重启它，让已打开的会话立刻用上新的供应商和模型行。apmux 不会自己启动守护进程：没有在跑的时候，下次启动 Codex 自然读到新配置，状态栏只提示「重启生效」。
 
 ## WebDAV
 

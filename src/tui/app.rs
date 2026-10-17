@@ -10,6 +10,7 @@ use crate::cloud;
 use crate::gist;
 use crate::i18n::{t, tf};
 use crate::paths::Paths;
+use crate::reload::ReloadOutcome;
 use crate::settings::{self, Settings};
 use crate::store::{AppId, Provider, Store};
 use crate::switch;
@@ -584,19 +585,17 @@ impl App {
             }
         };
         let app = self.current_app();
-        let (switched, outcome) =
+        let (switched, report) =
             switch::use_provider_quiet(&self.paths, &mut self.store, &id, Some(app))?;
-        self.status = match outcome {
+        self.status = match report.outcome {
             ApplyOutcome::SkippedUninitialized => {
                 let name = adapter::get(app).map(|a| a.display_name()).unwrap_or("?");
                 tf("status.switched_skip", &[&switched, name])
             }
             ApplyOutcome::Applied { .. } => {
-                format!(
-                    "{} \u{b7} {}",
-                    tf("status.switched", &[&switched]),
-                    t("status.restart_short")
-                )
+                let note =
+                    reload_note(&report.reload).unwrap_or_else(|| t("status.restart_short").into());
+                format!("{} \u{b7} {note}", tf("status.switched", &[&switched]))
             }
         };
         self.focus_current();
@@ -830,10 +829,17 @@ impl App {
                     }
                 };
                 match switch::edit_provider_quiet(&self.paths, &mut self.store, opts) {
-                    Ok(id) => {
+                    Ok(result) => {
                         self.overlay = Overlay::None;
-                        self.status = tf("status.updated", &[&id]);
-                        self.focus_id(&id);
+                        let updated = tf("status.updated", &[&result.name]);
+                        self.status = match result.report.and_then(|r| reload_note(&r.reload)) {
+                            Some(note) => format!("{updated} \u{b7} {note}"),
+                            None => updated,
+                        };
+                        // Focus by id: a rename leaves the id alone, so the
+                        // cursor lands on the edited row rather than falling
+                        // back to the current provider.
+                        self.focus_id(&result.id);
                     }
                     Err(e) => set_form_error(&mut self.overlay, e),
                 }
@@ -1507,6 +1513,17 @@ fn set_form_error(overlay: &mut Overlay, e: impl std::fmt::Display) {
     }
 }
 
+/// Status-bar note for a post-apply reload. Only a daemon apmux refreshed
+/// (or failed to refresh) needs saying; otherwise the generic restart hint
+/// in the caller still applies.
+fn reload_note(reload: &ReloadOutcome) -> Option<String> {
+    match reload {
+        ReloadOutcome::Restarted { .. } => Some(t("status.reloaded_short").into()),
+        ReloadOutcome::Failed(_) => Some(t("status.reload_failed_short").into()),
+        ReloadOutcome::NotApplicable | ReloadOutcome::NotRunning => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1831,6 +1848,32 @@ mod tests {
         assert_eq!(p.api_key, "sk-test-key-abcd");
         assert_eq!(p.model, None);
         assert_eq!(p.name, "Renamed");
+    }
+
+    #[test]
+    fn editing_a_row_leaves_the_cursor_on_it() {
+        let td = tempfile::tempdir().unwrap();
+        let paths = Paths::for_test(td.path());
+        let mut app = sample(paths);
+        // Edit the row that is *not* current and rename it. The name no longer
+        // matches anything, so focusing by display name would snap the cursor
+        // back to `packy`; focusing by id keeps it on the row just edited.
+        app.focus_id("other");
+        app.handle_action(Action::Edit);
+        {
+            let Overlay::Form(form) = &mut app.overlay else {
+                panic!("form");
+            };
+            form.fields
+                .iter_mut()
+                .find(|f| f.key == "name")
+                .unwrap()
+                .value = "Renamed".into();
+        }
+        app.submit_form();
+        assert!(matches!(app.overlay, Overlay::None), "{}", app.status);
+        assert_eq!(app.store.providers.get("other").unwrap().name, "Renamed");
+        assert_eq!(app.providers()[app.selected].id, "other");
     }
 
     #[test]

@@ -138,11 +138,7 @@ impl ModelPicker {
                 PickerCmd::Continue
             }
             KeyCode::Char(' ') if matches!(self.kind, PickerKind::Catalog) => {
-                if self.selected.contains(&self.cursor) {
-                    self.selected.remove(&self.cursor);
-                } else {
-                    self.selected.insert(self.cursor);
-                }
+                self.toggle_cursor();
                 PickerCmd::Continue
             }
             KeyCode::Enter => match self.kind {
@@ -167,6 +163,17 @@ impl ModelPicker {
     }
 
     fn handle_filter_key(&mut self, key: KeyEvent) -> PickerCmd {
+        // Space picks the highlighted catalog row straight out of the filter,
+        // so `/gpt` + Space is the whole "narrow down, take it" gesture. The
+        // typed filter stays on screen. Slot pickers take a literal space:
+        // their ids are free text.
+        if matches!(key.code, KeyCode::Char(' ')) && matches!(self.kind, PickerKind::Catalog) {
+            self.filtering = false;
+            if self.visible().contains(&self.cursor) {
+                self.toggle_cursor();
+            }
+            return PickerCmd::Continue;
+        }
         if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
             self.filtering = false;
             return PickerCmd::Continue;
@@ -183,6 +190,15 @@ impl ModelPicker {
             }
         }
         PickerCmd::Continue
+    }
+
+    /// Flip the catalog checkbox on the highlighted row.
+    fn toggle_cursor(&mut self) {
+        if self.selected.contains(&self.cursor) {
+            self.selected.remove(&self.cursor);
+        } else {
+            self.selected.insert(self.cursor);
+        }
     }
 
     fn after_filter(&mut self) {
@@ -1082,6 +1098,51 @@ mod tests {
                 .join(""),
             "abc" // underline caret adds no character
         );
+    }
+
+    #[test]
+    fn space_while_filtering_picks_the_highlighted_row() {
+        let ids: Vec<String> = (0..5).map(|i| format!("m{i:02}")).collect();
+        let mut p = ModelPicker::with_preselect(PickerKind::Catalog, ids, &[]);
+        p.handle_key(key(KeyCode::Char('/')));
+        p.handle_key(key(KeyCode::Char('3')));
+        assert_eq!(p.visible(), vec![3]);
+        assert!(p.filtering);
+        assert!(matches!(
+            p.handle_key(key(KeyCode::Char(' '))),
+            PickerCmd::Continue
+        ));
+        assert!(!p.filtering); // back to plain navigation…
+        assert_eq!(p.filter, "3"); // …with the typed filter still applied
+        assert!(p.selected.contains(&3)); // and the row picked
+        match p.handle_key(key(KeyCode::Enter)) {
+            PickerCmd::ConfirmCatalog(rows) => {
+                let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+                assert_eq!(ids, ["m03"]);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn space_without_a_matching_row_picks_nothing() {
+        let mut p =
+            ModelPicker::with_preselect(PickerKind::Catalog, vec!["a".into(), "b".into()], &[]);
+        p.handle_key(key(KeyCode::Char('/')));
+        p.handle_key(key(KeyCode::Char('z')));
+        assert!(p.visible().is_empty());
+        p.handle_key(key(KeyCode::Char(' ')));
+        assert!(p.selected.is_empty());
+    }
+
+    #[test]
+    fn space_while_filtering_is_literal_in_a_slot_picker() {
+        let mut p =
+            ModelPicker::with_preselect(PickerKind::Slot { key: "default" }, vec!["a".into()], &[]);
+        p.handle_key(key(KeyCode::Char('/')));
+        p.handle_key(key(KeyCode::Char(' ')));
+        assert!(p.filtering);
+        assert_eq!(p.filter, " ");
     }
 
     #[test]

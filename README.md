@@ -2,7 +2,7 @@
 
 Lightweight local tool to **switch providers** for Claude Code, Codex, OpenCode, and Pi Coding Agent, with rotating local backups and WebDAV or GitHub Gist cloud backup. No GUI. Run `apmux` with no arguments for the TUI, or use subcommands in scripts.
 
-Out of scope: proxy, MCP management, skills, sessions/usage, OAuth account managers, daemon, Gemini CLI.
+Out of scope: proxy, MCP management, skills, sessions/usage, OAuth account managers, daemon lifecycle management (apmux never starts a daemon; it only refreshes a running Codex app-server after a switch), Gemini CLI.
 
 [简体中文](README_ZH.md)
 
@@ -143,7 +143,7 @@ Provider list:
 
 Forms: `Tab` / ↑ ↓ change field, Space cycles options **or fetches the model list** on the Model field, Enter/Space on **Catalog**, **Slots**, or **Snippet** opens that editor, Enter on other fields submits, Esc cancels. Secrets are masked; leave empty on edit to keep the current value. Leave an optional model empty to clear it; a required model can’t be empty.
 
-Catalog apps (OpenCode, Pi, Codex): Space on Model fetches, Space toggles rows, Enter opens a catalog editor (`id` / `label` / `context_window` / `max_tokens`; Codex has no max-tokens column). Claude: the Slots field opens the table; Space picks one id for the focused slot; `a` copies that id onto the other slots including default.
+Catalog apps (OpenCode, Pi, Codex): Space on Model fetches, Space toggles rows, Enter opens a catalog editor (`id` / `label` / `context_window` / `max_tokens`; Codex has no max-tokens column). While filtering with `/`, Space picks the highlighted row straight away — no Enter first. Claude: the Slots field opens the table; Space picks one id for the focused slot; `a` copies that id onto the other slots including default.
 
 **Snippet** on the add/edit form is per-provider JSON. **Built-in checkboxes** (Claude hide-attribution / Teammates / Tool Search / effort / auto-upgrade; Codex Goal mode) sit above the JSON body and compose it. Opt in with **Apply snippet**, or `apmux add/edit --apply-snippet`. The snippet merges first; owned fields win. `apmux snippet <name>` prints/sets/clears that provider’s JSON.
 
@@ -154,6 +154,12 @@ Backups: Enter restores (confirm), `b` snapshots now, Esc returns.
 Sync: `e` setup, `p` push, `u` pull. While a job runs, a static **Syncing…** overlay is shown (no spinner); keys other than `q` are ignored.
 
 Settings (`g`): Space/Enter changes the focused row. App detection defaults to **auto**: only a CLI found on `PATH` counts — leftover config folders do not count. Switch to **manual** to show/hide each app. Language is saved in `$APMUX_CONFIG_DIR/settings.json`.
+
+## Codex app-server
+
+Codex's TUI talks to a long-lived local `app-server` daemon that reads `config.toml` and the model catalog **once, at start**. Ctrl+C only ends the session: a new one re-attaches to the same daemon, so `/model` keeps listing whatever the catalog held when that daemon started.
+
+After a switch (or an edit of the current provider) apmux restarts that daemon **if one is already running**, which hands the new provider and model rows to already-open sessions. apmux never starts a daemon: with none running, the next Codex launch reads the new config anyway and the status line just says *restart to apply*.
 
 ## WebDAV
 

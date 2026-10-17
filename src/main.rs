@@ -9,6 +9,7 @@ mod import;
 mod mask;
 mod name;
 mod paths;
+mod reload;
 mod settings;
 mod speedtest;
 mod status;
@@ -658,13 +659,24 @@ fn cmd_use(id: String, app: Option<AppId>) -> Result<()> {
     // Resolve up front so we know which app was affected even when the user
     // omitted --app; the hint below is app-specific.
     let target_app = switch::resolve(&store, &id, app)?.app;
-    let switched = switch::use_provider(&paths, &mut store, &id, app)?;
+    let (switched, report) = switch::use_provider(&paths, &mut store, &id, app)?;
     println!("switched {switched}");
-    println!(
-        "{}",
-        crate::i18n::tf("status.restart_long", &[target_app.to_string().as_str()])
-    );
+    println!("{}", after_switch_line(target_app, &report.reload));
     Ok(())
+}
+
+/// Post-switch hint. A running Codex daemon is refreshed by apmux itself, so
+/// the generic "restart it" advice would be wrong there; everything else
+/// reads its config at startup.
+fn after_switch_line(app: AppId, reload: &crate::reload::ReloadOutcome) -> String {
+    use crate::reload::ReloadOutcome;
+    match reload {
+        ReloadOutcome::Restarted { .. } => crate::i18n::t("status.reloaded_long").to_string(),
+        ReloadOutcome::Failed(err) => crate::i18n::tf("status.reload_failed_long", &[err]),
+        ReloadOutcome::NotApplicable | ReloadOutcome::NotRunning => {
+            crate::i18n::tf("status.restart_long", &[app.to_string().as_str()])
+        }
+    }
 }
 
 fn cmd_add(opts: switch::AddOpts) -> Result<()> {
