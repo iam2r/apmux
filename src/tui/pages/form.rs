@@ -45,6 +45,26 @@ impl InputField {
         self.cursor = self.value.chars().count();
         self
     }
+
+    /// A secret field whose value is already stored means "keep it" while it
+    /// is untouched (the `(keep current)` placeholder) *and* after the user
+    /// clears it: the TUI has no way to author an empty key, so an emptied
+    /// field keeps the stored value on confirm instead of wiping it.
+    fn keeps_stored_secret(&self) -> bool {
+        matches!(self.kind, FieldKind::Secret)
+            && (self.secret_keep || (self.saved_secret.is_some() && self.value.trim().is_empty()))
+    }
+}
+
+/// Drop the `(keep current)` placeholder so the field is an ordinary empty
+/// input again. Every edit gesture on a kept secret starts from blank; the
+/// stored value is never spliced into whatever gets typed next.
+fn release_kept_secret(f: &mut InputField) {
+    if matches!(f.kind, FieldKind::Secret) && f.secret_keep {
+        f.secret_keep = false;
+        f.value.clear();
+        f.cursor = 0;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -467,6 +487,7 @@ impl Form {
     pub fn paste(&mut self, text: &str) {
         if self.can_edit_text() {
             let f = &mut self.fields[self.focus];
+            release_kept_secret(f);
             crate::tui::edit::paste(&mut f.value, &mut f.cursor, text);
         }
     }
@@ -501,9 +522,6 @@ impl Form {
         if matches!(f.kind, FieldKind::Select(_)) {
             return false;
         }
-        if matches!(f.kind, FieldKind::Secret) && f.secret_keep {
-            return false;
-        }
         true
     }
 
@@ -525,11 +543,7 @@ impl Form {
             return;
         }
         let f = &mut self.fields[self.focus];
-        if matches!(f.kind, FieldKind::Secret) && f.secret_keep {
-            f.secret_keep = false;
-            f.value.clear();
-            f.cursor = 0;
-        }
+        release_kept_secret(f);
         crate::tui::edit::insert(&mut f.value, &mut f.cursor, c);
     }
 
@@ -564,13 +578,12 @@ impl Form {
         if matches!(f.kind, FieldKind::Select(_)) {
             return;
         }
-        if matches!(f.kind, FieldKind::Secret) && f.secret_keep {
-            return;
-        }
+        // Backspace on a kept secret drops the placeholder and leaves an
+        // empty field that can be typed into; it does not flip straight back
+        // to "keep current", which would make clearing a dead end. An empty
+        // field still keeps the stored value on confirm (`secret_value`).
+        release_kept_secret(f);
         crate::tui::edit::backspace(&mut f.value, &mut f.cursor);
-        if matches!(f.kind, FieldKind::Secret) && f.value.is_empty() && f.saved_secret.is_some() {
-            f.secret_keep = true;
-        }
     }
 
     fn delete_char(&mut self) {
@@ -579,6 +592,7 @@ impl Form {
             return;
         }
         let f = &mut self.fields[self.focus];
+        release_kept_secret(f);
         crate::tui::edit::delete(&mut f.value, &mut f.cursor);
     }
 
@@ -611,14 +625,15 @@ impl Form {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("missing id"))?;
         let api_key = self.fields.iter().find_map(|f| {
-            if f.storage == Some(FieldStorage::ApiKey) {
-                if f.secret_keep {
-                    None
-                } else {
-                    Some(f.value.trim().to_string())
-                }
-            } else {
+            if f.storage != Some(FieldStorage::ApiKey) {
+                return None;
+            }
+            if f.keeps_stored_secret() {
+                // `None` = keep the stored key: untouched, or cleared by
+                // hand. apmux never writes an empty API key by accident.
                 None
+            } else {
+                Some(f.value.trim().to_string())
             }
         });
         Ok(EditOpts {
@@ -650,7 +665,7 @@ impl Form {
             .iter()
             .find(|f| f.key == "password")
             .ok_or_else(|| anyhow::anyhow!("missing password"))?;
-        let password = if pass_f.secret_keep {
+        let password = if pass_f.keeps_stored_secret() {
             pass_f.saved_secret.clone().unwrap_or_default()
         } else {
             pass_f.value.clone()
@@ -676,7 +691,7 @@ impl Form {
             .iter()
             .find(|f| f.key == "token")
             .ok_or_else(|| anyhow::anyhow!("missing token"))?;
-        let token = if token_f.secret_keep {
+        let token = if token_f.keeps_stored_secret() {
             // Kept secret: none typed; setup_with reuses the stored token.
             None
         } else {
@@ -700,7 +715,7 @@ impl Form {
             if f.storage.is_none() {
                 continue;
             }
-            if matches!(f.kind, FieldKind::Secret) && f.secret_keep {
+            if f.keeps_stored_secret() {
                 continue;
             }
             let v = f.value.trim();
@@ -733,7 +748,7 @@ impl Form {
             .iter()
             .find(|f| f.storage == Some(storage))
             .ok_or_else(|| anyhow::anyhow!("missing field"))?;
-        if f.secret_keep {
+        if f.keeps_stored_secret() {
             f.saved_secret
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("{}", tf("form.required", &[t(f.label)])))
@@ -821,7 +836,7 @@ impl Form {
             .iter()
             .find(|f| f.storage == Some(FieldStorage::ApiKey))
             .map(|f| {
-                if f.secret_keep {
+                if f.keeps_stored_secret() {
                     f.saved_secret.clone().unwrap_or_default()
                 } else {
                     f.value.clone()
@@ -1078,6 +1093,86 @@ mod tests {
         let opts = form.edit_opts().unwrap();
         assert!(opts.api_key.is_none());
         assert_eq!(opts.model.as_deref(), Some("sonnet"));
+    }
+
+    /// An edit form whose API key is stored but untouched: the field shows
+    /// the `(keep current)` placeholder with the caret parked at 0.
+    fn edit_form_with_stored_key() -> Form {
+        let p = Provider {
+            id: "packy".into(),
+            name: "Packy".into(),
+            app: AppId::Claude,
+            base_url: "https://api.example.com".into(),
+            api_key: "sk-old-secret-key".into(),
+            model: Some("sonnet".into()),
+            extras: Default::default(),
+            ..Provider::blank(AppId::Claude)
+        };
+        let mut form = for_edit(&p).unwrap();
+        form.focus = form
+            .fields
+            .iter()
+            .position(|f| f.key == "api_key")
+            .expect("api_key");
+        form
+    }
+
+    fn press(form: &mut Form, code: KeyCode) {
+        form.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn backspace_releases_a_kept_secret_instead_of_snapping_back() {
+        let mut form = edit_form_with_stored_key();
+        assert!(form.fields[form.focus].secret_keep);
+        press(&mut form, KeyCode::Backspace);
+        // Emptied, not re-placeholdered: the field stays somewhere the user
+        // can type into…
+        assert!(!form.fields[form.focus].secret_keep);
+        assert!(form.fields[form.focus].value.is_empty());
+        // …and confirming it empty keeps the stored key.
+        assert!(form.edit_opts().unwrap().api_key.is_none());
+    }
+
+    #[test]
+    fn typing_after_clearing_replaces_the_stored_key() {
+        let mut form = edit_form_with_stored_key();
+        press(&mut form, KeyCode::Backspace);
+        for c in "sk-new-key".chars() {
+            press(&mut form, KeyCode::Char(c));
+        }
+        assert_eq!(
+            form.edit_opts().unwrap().api_key.as_deref(),
+            Some("sk-new-key")
+        );
+    }
+
+    #[test]
+    fn paste_replaces_a_kept_secret() {
+        let mut form = edit_form_with_stored_key();
+        form.paste("sk-pasted-key");
+        assert!(!form.fields[form.focus].secret_keep);
+        assert_eq!(
+            form.edit_opts().unwrap().api_key.as_deref(),
+            Some("sk-pasted-key")
+        );
+    }
+
+    #[test]
+    fn cleared_sync_password_keeps_the_stored_one() {
+        let mut form = for_sync_setup(Some((
+            "https://dav.example.com/".into(),
+            "user".into(),
+            "stored-pass".into(),
+        )));
+        form.focus = form
+            .fields
+            .iter()
+            .position(|f| f.key == "password")
+            .unwrap();
+        press(&mut form, KeyCode::Backspace);
+        assert!(!form.fields[form.focus].secret_keep);
+        assert_eq!(form.sync_setup().unwrap().2, "stored-pass");
     }
 
     #[test]

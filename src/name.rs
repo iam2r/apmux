@@ -67,5 +67,13 @@ pub const MANIFEST_FORMAT: &str = "webdav-sync";
 /// prefix: the file already lives inside the app's own config dir.
 pub const CODEX_CATALOG_FILE: &str = "model-catalog.json";
 
+/// Directory (under the Codex home) where Codex keeps its local app-server
+/// daemon state. apmux reads the pid file to tell "a daemon has run here"
+/// from "this machine never used one".
+pub const CODEX_DAEMON_DIR: &str = "app-server-daemon";
+
+/// Daemon identity file inside [`CODEX_DAEMON_DIR`].
+pub const CODEX_DAEMON_PID_FILE: &str = "daemon.pid";
+
 /// Fallback slot key when a provider has no usable display name.
 pub const DEFAULT_SLOT_KEY: &str = "managed";

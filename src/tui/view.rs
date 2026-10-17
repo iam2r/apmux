@@ -428,11 +428,7 @@ fn draw_picker(frame: &mut Frame, picker: &mut ModelPicker, area: Rect, theme: T
         let id = &picker.ids[idx];
         let text = match picker.kind {
             PickerKind::Catalog => {
-                let mark = if picker.selected.contains(&idx) {
-                    "[x]"
-                } else {
-                    "[ ]"
-                };
+                let mark = toggle_mark(picker.selected.contains(&idx));
                 format!("{cur}{mark} {id}")
             }
             PickerKind::Slot { .. } => format!("{cur} {id}"),
@@ -636,7 +632,7 @@ fn draw_catalog(frame: &mut Frame, editor: &CatalogEditor, area: Rect, theme: Th
                     .map(|owner| owner == own)
                     .unwrap_or(false);
                 Line::from(Span::styled(
-                    format!("{cur}[{}] {}", if mark { "x" } else { " " }, t(s.label)),
+                    format!("{cur}{} {}", toggle_mark(mark), t(s.label)),
                     theme.fg(theme.fg),
                 ))
             })
@@ -647,13 +643,7 @@ fn draw_catalog(frame: &mut Frame, editor: &CatalogEditor, area: Rect, theme: Th
         let mut lines = Vec::new();
         // Item 0 is "(none)" — clears the row's target_model_id.
         let mark_idx = picker.mark;
-        let mark_of = |i: usize| {
-            if mark_idx == Some(i) {
-                "[x]"
-            } else {
-                "[ ]"
-            }
-        };
+        let mark_of = |i: usize| toggle_mark(mark_idx == Some(i));
         let none_cur = if picker.cursor == 0 { ">" } else { " " };
         lines.push(Line::from(Span::styled(
             format!("{none_cur}{} (none)", mark_of(0)),
@@ -703,6 +693,17 @@ fn draw_slots(frame: &mut Frame, editor: &SlotEditor, area: Rect, theme: Theme) 
     popup_lines(frame, area, t("ui.slots"), lines, theme, 14);
 }
 
+/// Checkbox glyph for toggle lists. Brackets keep the empty box visible, so
+/// every row still reads as something Space can toggle; the check replaces
+/// the `x` the toggles used to draw.
+fn toggle_mark(on: bool) -> &'static str {
+    if on {
+        "[✓]"
+    } else {
+        "[ ]"
+    }
+}
+
 fn draw_snippet(
     frame: &mut Frame,
     page: &super::pages::quick::SnippetPage,
@@ -721,11 +722,7 @@ fn draw_snippet(
         )));
         for (i, item) in items.iter().enumerate() {
             let cur = if page.cursor == i { ">" } else { " " };
-            let mark = if page.item_on(item, &snippet) {
-                "[x]"
-            } else {
-                "[ ]"
-            };
+            let mark = toggle_mark(page.item_on(item, &snippet));
             lines.push(Line::from(format!("{cur}{mark} {}", t(item.label))));
         }
         lines.push(Line::from(""));
@@ -1013,8 +1010,18 @@ mod tests {
             .join("\n");
         assert!(joined.contains("/ m0")); // filter text intact; caret is an underline style now
         assert!(!joined.contains('_')); // no inserted caret glyph anywhere
-        assert!(joined.contains("[ ] m00"));
+        assert!(joined.contains(">[ ] m00")); // cursor row, empty checkbox
+        assert!(!joined.contains("[x]")); // the check is a glyph, not a letter
         assert!(!joined.contains("m05")); // second page stays hidden
         assert!(joined.contains("1/10")); // title position
+
+        picker.selected.insert(0);
+        term.draw(|f| draw_picker(f, &mut picker, f.area(), Theme::for_app(AppId::Claude)))
+            .unwrap();
+        let joined: String = (0..10)
+            .map(|y| row(&term, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains(">[✓] m00")); // selected row carries the check
     }
 }

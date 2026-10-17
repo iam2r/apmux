@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here.
 
+## 0.1.25 (2026-10-17)
+
+### Fixes
+
+- Refresh a running Codex `app-server` after a switch, so `/model` stops serving the catalog the daemon read at startup. Codex's TUI re-attaches to that daemon, so Ctrl+C plus a new session kept the old provider and model rows until the daemon restarted. apmux now restarts the daemon after a successful live write — but only when one is already running (pid file plus an `app-server daemon version` probe); it never starts one. The TUI status line says the app-server was restarted, and `apmux use` prints the same instead of the generic "restart to apply" hint. A failed restart falls back to that hint with the reason.
+- Keep the provider-list cursor on the row you just edited. The TUI focused rows by display name, which a rename changes, so saving an edit of any provider other than the current one moved the cursor to the current provider instead of staying put.
+- Three TUI form/picker fixes. Space on a filtered model list (`/gpt` + Space) now picks the highlighted row in one gesture instead of needing Enter to leave the filter first; the typed filter stays on screen. Toggle lists — model pickers, catalog flags, and snippet checkboxes — draw a `[✓]` check where they used to print `[x]`, keeping the empty `[ ]` box visible so every row still reads as togglable. And clearing a stored secret (API key, sync password, gist token) leaves an empty field you can type into rather than snapping back to `(keep current)`; confirming it empty still keeps the stored value, so an emptied field is never written as a blank key.
+
 ## 0.1.24 (2026-10-15)
 
 ### Fixes
