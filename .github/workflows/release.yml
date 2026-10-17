@@ -7,7 +7,10 @@ name: Release
 #     → `prepare-release` job: Knope consumes the change files on the
 #       `release` branch (Cargo.toml/Cargo.lock bump, CHANGELOG.md entry,
 #       change files deleted) and force-pushes it, then opens/updates the
-#       Release PR (release → main) for the maintainer to merge
+#       Release PR (release → main) for the maintainer to merge. Runs started
+#       by GITHUB_TOKEN wait in `action_required` for a maintainer click, so
+#       the job approves the runs it just created itself (see the step) —
+#       `main` requires the checks those runs report.
 #   maintainer merges the Release PR with a merge commit (not squash/rebase)
 #     → `publish-release` job: if `apmux/vX.Y.Z` does not yet exist, tag the
 #       merge commit and dispatch `release-build.yml` (GITHUB_TOKEN tag
@@ -99,6 +102,35 @@ jobs:
             gh pr create --head release --base main \
               --title "Release v${VERSION}" --body-file body.md
           fi
+
+      # A PR opened or updated with GITHUB_TOKEN parks its workflow runs in
+      # `action_required` until a maintainer clicks "Approve and run", and
+      # `main` requires the check runs that CI reports — so every release used
+      # to need that click, and one (v0.1.24) merged with CI never running.
+      # The token can approve runs it created (`actions: write`), so do it here.
+      - name: Approve the gated CI runs for the Release PR
+        if: steps.gate.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          SHA="$(git rev-parse origin/release)"
+          # the run shows up a few seconds after the PR is opened or updated
+          ids=""
+          for _ in $(seq 1 12); do
+            ids="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?event=pull_request&head_sha=${SHA}" \
+              --jq '.workflow_runs[] | select(.conclusion == "action_required") | .id' || true)"
+            [ -n "${ids}" ] && break
+            sleep 5
+          done
+          if [ -z "${ids}" ]; then
+            echo "::warning::no gated pull_request run found for ${SHA} — if the Release PR checks stay 'Expected', approve or re-run them by hand."
+            exit 0
+          fi
+          for id in ${ids}; do
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/approve" >/dev/null
+            echo "approved run ${id}"
+          done
 
   publish-release:
     name: Tag release & back-merge develop

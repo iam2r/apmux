@@ -73,9 +73,10 @@ change files and push again.
 3. Push to `develop`. The release bot takes over:
    consumes the change files → bumps `Cargo.toml` / `Cargo.lock` and updates
    `CHANGELOG.md` on a `release` branch → opens a Release PR (`release` →
-   `main`). Merge it with a **merge commit** (not squash/rebase). The push
-   to `main` tags `apmux/vX.Y.Z` (skipped if the tag already exists),
-   builds binaries, and back-merges `main` into `develop`.
+   `main`) and approves the CI run it started, so the checks report without
+   anyone clicking "Approve and run". Merge it with a **merge commit** (not
+   squash/rebase). The push to `main` tags `apmux/vX.Y.Z` (skipped if the tag
+   already exists), builds binaries, and back-merges `main` into `develop`.
 
 Hotfixes also go through `develop` (push the fix + change file there — it's
 the fastest path to a release). `main` never takes feature work.
